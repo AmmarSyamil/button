@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Button Beep</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: #101114; color: #f5f5f5; padding: 20px; }
+    main { width: 100%; max-width: 360px; text-align: center; }
+    h1 { font-size: 1.8rem; margin: 0 0 10px; }
+    p { color: #a7a7ad; line-height: 1.5; }
+    .circle { width: 136px; height: 136px; border-radius: 50%; margin: 30px auto 20px; background: #2a2c32; border: 8px solid #3b3d43; display: grid; place-items: center; font-size: 1.15rem; font-weight: 700; transition: background .08s, transform .08s; }
+    .circle.pressed { background: #21a675; border-color: #64d8ab; color: #06281b; transform: scale(.96); }
+    button { width: 100%; border: 0; border-radius: 12px; padding: 15px; color: white; background: #476dff; font: inherit; font-weight: 650; cursor: pointer; }
+    button:hover { background: #5b7dff; }
+    button:disabled { opacity: .6; cursor: wait; }
+    #status { font-size: .92rem; min-height: 2.8em; margin: 16px 0; }
+    small { display: block; color: #8d909a; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Button Beep</h1>
+    <p>Connect your Arduino Uno, then press your physical button.</p>
+    <div class="circle" id="indicator">Ready</div>
+    <button id="connect">Connect Arduino</button>
+    <p id="status" role="status" aria-live="polite">Not connected</p>
+    <small>Uses USB serial at 9600 baud. Works in supported desktop browsers over HTTPS or localhost.</small>
+  </main>
+
+  <script>
+    const button = document.querySelector('#connect');
+    const indicator = document.querySelector('#indicator');
+    const status = document.querySelector('#status');
+
+    let port, reader, audio, tone, volume;
+    let listening = false;
+
+    function show(message, pressed = false) {
+      status.textContent = message;
+      indicator.textContent = pressed ? 'BEEP!' : 'Ready';
+      indicator.classList.toggle('pressed', pressed);
+    }
+
+    function startBeep() {
+      if (!audio || tone) return;
+      tone = audio.createOscillator();
+      volume = audio.createGain();
+      tone.type = 'sine';
+      tone.frequency.value = 900;
+      volume.gain.setValueAtTime(0, audio.currentTime);
+      volume.gain.linearRampToValueAtTime(0.06, audio.currentTime + 0.01);
+      tone.connect(volume).connect(audio.destination);
+      tone.start();
+      show('Button pressed', true);
+    }
+
+    function stopBeep() {
+      if (!tone) return;
+      const oldTone = tone;
+      const oldVolume = volume;
+      tone = null;
+      volume = null;
+      oldVolume.gain.setTargetAtTime(0, audio.currentTime, 0.01);
+      oldTone.stop(audio.currentTime + 0.06);
+      oldTone.onended = () => { oldTone.disconnect(); oldVolume.disconnect(); };
+      show('Connected — press the button');
+    }
+
+    function handleLine(line) {
+      if (line.trim() === 'PRESSED') startBeep();
+      if (line.trim() === 'RELEASED') stopBeep();
+    }
+
+    async function readSerial() {
+      const decoder = new TextDecoder();
+      let pending = '';
+      try {
+        reader = port.readable.getReader();
+        while (listening) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          pending += decoder.decode(value, { stream: true });
+          let end;
+          while ((end = pending.indexOf('\n')) !== -1) {
+            handleLine(pending.slice(0, end));
+            pending = pending.slice(end + 1);
+          }
+          if (pending.length > 256) pending = '';
+        }
+      } catch (error) {
+        if (listening) show(`Connection lost: ${error.message}`);
+      } finally {
+        listening = false;
+        if (reader) { reader.releaseLock(); reader = null; }
+        stopBeep();
+        try { await port?.close(); } catch {}
+        port = null;
+        button.textContent = 'Connect Arduino';
+        button.disabled = false;
+        if (!status.textContent.startsWith('Connection lost')) show('Disconnected');
+      }
+    }
+
+    button.addEventListener('click', async () => {
+      if (listening) {
+        button.disabled = true;
+        listening = false;
+        try { await reader?.cancel(); } catch {}
+        return;
+      }
+
+      if (!('serial' in navigator)) {
+        show('Web Serial unavailable. Try Chrome or Edge on HTTPS.');
+        return;
+      }
+
+      button.disabled = true;
+      try {
+        // Start audio in response to the click; later USB events can then play it.
+        audio ??= new AudioContext();
+        const audioReady = audio.resume();
+        const chosen = await navigator.serial.requestPort();
+        await audioReady;
+        await chosen.open({ baudRate: 9600 });
+        port = chosen;
+        listening = true;
+        button.textContent = 'Disconnect';
+        button.disabled = false;
+        show('Connected — press the button');
+        await readSerial();
+      } catch (error) {
+        show(`Could not connect: ${error.message}`);
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
