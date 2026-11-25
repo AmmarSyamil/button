@@ -49,9 +49,10 @@
       tone = audio.createOscillator();
       volume = audio.createGain();
       tone.type = 'sine';
-      tone.frequency.value = 900;
+      tone.frequency.value = 1000;
       volume.gain.setValueAtTime(0, audio.currentTime);
-      volume.gain.linearRampToValueAtTime(0.06, audio.currentTime + 0.01);
+      // High output level (90% of maximum digital amplitude) with a short fade-in.
+      volume.gain.linearRampToValueAtTime(0.9, audio.currentTime + 0.02);
       tone.connect(volume).connect(audio.destination);
       tone.start();
       show('Button pressed', true);
