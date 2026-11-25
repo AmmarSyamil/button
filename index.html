@@ -15,19 +15,20 @@
     .circle.pressed { background: #21a675; border-color: #64d8ab; color: #06281b; transform: scale(.96); }
     button { width: 100%; border: 0; border-radius: 12px; padding: 15px; color: white; background: #476dff; font: inherit; font-weight: 650; cursor: pointer; }
     button:hover { background: #5b7dff; }
+    kbd { display: inline-block; padding: 1px 6px; border-radius: 5px; background: #30323a; color: #f5f5f5; font: inherit; font-size: .85em; }
     button:disabled { opacity: .6; cursor: wait; }
-    #status { font-size: .92rem; min-height: 2.8em; margin: 16px 0; }
+    #status { font-size: .92rem; min-height: 2.8em; margin: 16px 0; overflow-wrap: anywhere; }
     small { display: block; color: #8d909a; line-height: 1.5; }
   </style>
 </head>
 <body>
   <main>
     <h1>Button Beep</h1>
-    <p>Connect your Arduino Uno, then press for a cheerful double bip.</p>
+    <p>Press <kbd>Space</kbd> or connect your Arduino Uno to play your custom sound.</p>
     <div class="circle" id="indicator">Ready</div>
     <button id="connect">Connect Arduino</button>
-    <p id="status" role="status" aria-live="polite">Not connected</p>
-    <small>Uses USB serial at 9600 baud. Works in supported desktop browsers over HTTPS or localhost.</small>
+    <p id="status" role="status" aria-live="polite">Not connected — press Space to play</p>
+    <small>Using sounds.mp3 • USB serial at 9600 baud</small>
   </main>
 
   <script>
@@ -35,56 +36,108 @@
     const indicator = document.querySelector('#indicator');
     const status = document.querySelector('#status');
 
-    let port, reader, audio;
+    let port = null;
+    let reader = null;
     let listening = false;
+    let audio = null;
+    let soundBuffer = null;
+    let soundLoading = null;
+    let activeSound = null;
+    let spaceHeld = false;
+    let physicalHeld = false;
 
     function show(message, pressed = false) {
       status.textContent = message;
-      indicator.textContent = pressed ? 'BIP BIP!' : 'Ready';
+      indicator.textContent = pressed ? 'PLAY!' : 'Ready';
       indicator.classList.toggle('pressed', pressed);
     }
 
-    // Play two short, musical "bips" for each press.
-    // The soft attack/release avoids the harsh clicks of an abrupt tone.
-    function playBip(startTime, frequency, duration = 0.115) {
-      const oscillator = audio.createOscillator();
-      const gain = audio.createGain();
-      oscillator.type = 'sine';
-      oscillator.frequency.setValueAtTime(frequency, startTime);
+    // Load the MP3 from the same folder as index.html.
+    function initAudio() {
+      audio ??= new AudioContext();
+      // Called from a click or keyboard press to unlock browser audio.
+      return audio.resume();
+    }
 
-      // Clear and fairly loud, but not at full-scale output.
-      gain.gain.setValueAtTime(0, startTime);
-      gain.gain.linearRampToValueAtTime(0.7, startTime + 0.012);
-      gain.gain.setValueAtTime(0.7, startTime + duration - 0.040);
-      gain.gain.linearRampToValueAtTime(0, startTime + duration);
+    async function loadSound() {
+      if (soundBuffer) return;
+      if (!soundLoading) {
+        soundLoading = (async () => {
+          const response = await fetch('./sounds.mp3');
+          if (!response.ok) {
+            throw new Error(`Could not load sounds.mp3 (HTTP ${response.status}). Check its filename in GitHub.`);
+          }
+          try {
+            soundBuffer = await audio.decodeAudioData(await response.arrayBuffer());
+          } catch {
+            throw new Error('sounds.mp3 could not be decoded. Try another MP3 file.');
+          }
+        })().finally(() => { soundLoading = null; });
+      }
+      await soundLoading;
+    }
 
-      oscillator.connect(gain).connect(audio.destination);
-      oscillator.start(startTime);
-      oscillator.stop(startTime + duration + 0.01);
-      oscillator.onended = () => {
-        oscillator.disconnect();
-        gain.disconnect();
+    async function playFromSpace() {
+      try {
+        const audioReady = initAudio();
+        if (!soundBuffer) show('Loading sounds.mp3…');
+        await audioReady;
+        await loadSound();
+        playSound();
+        if (!spaceHeld && !physicalHeld) show(listening ? 'Connected — press button or Space' : 'Ready — press Space');
+      } catch (error) {
+        show(`Could not play sound: ${error.message}`);
+      }
+    }
+
+    // Space triggers the exact same MP3 even without an Arduino connected.
+    // Ignore key repeats and text fields. Space works even when Connect has focus.
+    document.addEventListener('keydown', event => {
+      if (event.code !== 'Space' || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (event.target.closest?.('input, textarea, select, [contenteditable]')) return;
+      event.preventDefault(); // Prevent page scrolling when pressing Space.
+      spaceHeld = true;
+      void playFromSpace();
+    });
+
+    document.addEventListener('keyup', event => {
+      if (event.code !== 'Space' || !spaceHeld) return;
+      event.preventDefault();
+      spaceHeld = false;
+      if (!physicalHeld) show(listening ? 'Connected — press button or Space' : 'Ready — press Space');
+    });
+
+    function playSound() {
+      if (!audio || !soundBuffer) return;
+
+      // A new press starts the sound from the beginning.
+      if (activeSound) {
+        try { activeSound.stop(); } catch {}
+        activeSound = null;
+      }
+
+      const source = audio.createBufferSource();
+      const volume = audio.createGain();
+      source.buffer = soundBuffer;
+      volume.gain.value = 0.8;
+      source.connect(volume).connect(audio.destination);
+      source.onended = () => {
+        if (activeSound === source) activeSound = null;
+        source.disconnect();
+        volume.disconnect();
       };
-    }
-
-    function startBeep() {
-      if (!audio) return;
-      const now = audio.currentTime + 0.005;
-      playBip(now, 830);
-      playBip(now + 0.185, 940);
-      show('Bip bip!', true);
-    }
-
-    function stopBeep() {
-      // Releasing the switch resets the indicator. Both short bips finish
-      // naturally, even if the user only taps the button briefly.
-      indicator.classList.remove('pressed');
-      show('Connected — press the button');
+      activeSound = source;
+      source.start();
+      show('Playing custom sound', true);
     }
 
     function handleLine(line) {
-      if (line.trim() === 'PRESSED') startBeep();
-      if (line.trim() === 'RELEASED') stopBeep();
+      if (line.trim() === 'PRESSED') { physicalHeld = true; playSound(); }
+      if (line.trim() === 'RELEASED') {
+        physicalHeld = false;
+        if (!spaceHeld) show('Connected — press button or Space');
+      }
+      // The full sound plays on each press, even after releasing the button.
     }
 
     async function readSerial() {
@@ -108,12 +161,12 @@
       } finally {
         listening = false;
         if (reader) { reader.releaseLock(); reader = null; }
-        stopBeep();
         try { await port?.close(); } catch {}
         port = null;
         button.textContent = 'Connect Arduino';
         button.disabled = false;
-        if (!status.textContent.startsWith('Connection lost')) show('Disconnected');
+        physicalHeld = false;
+        if (!status.textContent.startsWith('Connection lost')) show('Disconnected — press Space to play');
       }
     }
 
@@ -126,25 +179,28 @@
       }
 
       if (!('serial' in navigator)) {
-        show('Web Serial unavailable. Try Chrome or Edge on HTTPS.');
+        show('Web Serial unavailable. Use Chrome or Edge over HTTPS.');
         return;
       }
 
       button.disabled = true;
+      let chosen = null;
       try {
-        // Start audio in response to the click; later USB events can then play it.
-        audio ??= new AudioContext();
-        const audioReady = audio.resume();
-        const chosen = await navigator.serial.requestPort();
+        // Resume audio directly on a click, so later USB events can play it.
+        const audioReady = initAudio();
+        chosen = await navigator.serial.requestPort();
         await audioReady;
+        show('Loading sounds.mp3…');
+        await loadSound();
         await chosen.open({ baudRate: 9600 });
         port = chosen;
         listening = true;
         button.textContent = 'Disconnect';
         button.disabled = false;
-        show('Connected — press the button');
+        show('Connected — press button or Space');
         await readSerial();
       } catch (error) {
+        if (chosen && chosen !== port) { try { await chosen.close(); } catch {} }
         show(`Could not connect: ${error.message}`);
         button.disabled = false;
       }
