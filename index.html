@@ -23,7 +23,7 @@
 <body>
   <main>
     <h1>Button Beep</h1>
-    <p>Connect your Arduino Uno, then press your physical button.</p>
+    <p>Connect your Arduino Uno, then press for a cheerful double bip.</p>
     <div class="circle" id="indicator">Ready</div>
     <button id="connect">Connect Arduino</button>
     <p id="status" role="status" aria-live="polite">Not connected</p>
@@ -35,38 +35,50 @@
     const indicator = document.querySelector('#indicator');
     const status = document.querySelector('#status');
 
-    let port, reader, audio, tone, volume;
+    let port, reader, audio;
     let listening = false;
 
     function show(message, pressed = false) {
       status.textContent = message;
-      indicator.textContent = pressed ? 'BEEP!' : 'Ready';
+      indicator.textContent = pressed ? 'BIP BIP!' : 'Ready';
       indicator.classList.toggle('pressed', pressed);
     }
 
+    // Play two short, musical "bips" for each press.
+    // The soft attack/release avoids the harsh clicks of an abrupt tone.
+    function playBip(startTime, frequency, duration = 0.115) {
+      const oscillator = audio.createOscillator();
+      const gain = audio.createGain();
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(frequency, startTime);
+
+      // Clear and fairly loud, but not at full-scale output.
+      gain.gain.setValueAtTime(0, startTime);
+      gain.gain.linearRampToValueAtTime(0.7, startTime + 0.012);
+      gain.gain.setValueAtTime(0.7, startTime + duration - 0.040);
+      gain.gain.linearRampToValueAtTime(0, startTime + duration);
+
+      oscillator.connect(gain).connect(audio.destination);
+      oscillator.start(startTime);
+      oscillator.stop(startTime + duration + 0.01);
+      oscillator.onended = () => {
+        oscillator.disconnect();
+        gain.disconnect();
+      };
+    }
+
     function startBeep() {
-      if (!audio || tone) return;
-      tone = audio.createOscillator();
-      volume = audio.createGain();
-      tone.type = 'sine';
-      tone.frequency.value = 1000;
-      volume.gain.setValueAtTime(0, audio.currentTime);
-      // High output level (90% of maximum digital amplitude) with a short fade-in.
-      volume.gain.linearRampToValueAtTime(0.9, audio.currentTime + 0.02);
-      tone.connect(volume).connect(audio.destination);
-      tone.start();
-      show('Button pressed', true);
+      if (!audio) return;
+      const now = audio.currentTime + 0.005;
+      playBip(now, 830);
+      playBip(now + 0.185, 940);
+      show('Bip bip!', true);
     }
 
     function stopBeep() {
-      if (!tone) return;
-      const oldTone = tone;
-      const oldVolume = volume;
-      tone = null;
-      volume = null;
-      oldVolume.gain.setTargetAtTime(0, audio.currentTime, 0.01);
-      oldTone.stop(audio.currentTime + 0.06);
-      oldTone.onended = () => { oldTone.disconnect(); oldVolume.disconnect(); };
+      // Releasing the switch resets the indicator. Both short bips finish
+      // naturally, even if the user only taps the button briefly.
+      indicator.classList.remove('pressed');
       show('Connected — press the button');
     }
 
